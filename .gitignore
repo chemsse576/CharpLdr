@@ -2,6 +2,7 @@ build/
 *.exe
 *.dll
 *.enc
+!payloads/*.enc
 *.obj
 *.pdb
 *.ilk
