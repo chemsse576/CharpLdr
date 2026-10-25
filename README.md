@@ -144,7 +144,6 @@ Any .NET Framework 4.x assembly with a `static int Main(string[])` entry point w
 - [SharpDPAPI](https://github.com/GhostPack/SharpDPAPI) — DPAPI triage
 - [SharpChrome](https://github.com/GhostPack/SharpDPAPI) — Chrome credential recovery
 - [Whisker](https://github.com/eladshamir/Whisker) — Shadow credentials abuse
-- [Snaffler](https://github.com/SnaffCon/Snaffler) — Sensitive file discovery
 - [StandIn](https://github.com/FuzzySecurity/StandIn) — AD post-exploitation
 - [SharpView](https://github.com/tevora-threat/SharpView) — .NET port of PowerView
 - [KrbRelayUp](https://github.com/Dec0ne/KrbRelayUp) — Kerberos relay privilege escalation
