@@ -13,7 +13,7 @@
 #include <mscoree.h>
 
 #pragma warning(push)
-#pragma warning(disable: 4278 4146 4471)
+#pragma warning(disable: 4192 4278 4146 4471)
 #import "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\mscorlib.tlb" \
     raw_interfaces_only                                    \
     high_property_prefixes("_get","_put","_putref")        \
@@ -201,7 +201,7 @@ bool execute_assembly(unsigned char* payload, size_t payload_size,
 
                         VARIANT vtObj;
                         VariantInit(&vtObj);
-                        vtObj.vt = VT_NULL;
+                        vtObj.vt = VT_EMPTY;
 
                         VARIANT vtRet;
                         VariantInit(&vtRet);
