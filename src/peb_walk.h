@@ -59,6 +59,9 @@ typedef void(NTAPI* fn_TpReleaseWork)(void* Work);
 // Typedef for EtwEventWrite
 typedef ULONG(NTAPI* fn_EtwEventWrite)(void* RegHandle, const void* EventDescriptor, ULONG UserDataCount, const void* UserData);
 
+// Typedef for RtlAdjustPrivilege
+typedef NTSTATUS(NTAPI* fn_RtlAdjustPrivilege)(ULONG Privilege, BOOLEAN Enable, BOOLEAN CurrentThread, PBOOLEAN PreviousState);
+
 // Global struct holding all resolved function pointers (set-once during init)
 struct ResolvedAPIs {
     // Phase 1: ntdll
@@ -68,6 +71,7 @@ struct ResolvedAPIs {
     fn_TpAllocWork pTpAllocWork;
     fn_TpPostWork pTpPostWork;
     fn_TpReleaseWork pTpReleaseWork;
+    fn_RtlAdjustPrivilege pRtlAdjustPrivilege;
 
     // Phase 2: kernel32
     fn_GetThreadContext pGetThreadContext;

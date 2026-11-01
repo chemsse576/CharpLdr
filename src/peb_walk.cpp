@@ -117,6 +117,9 @@ bool resolve_phase1_ntdll() {
     if (!g_apis.pTpAllocWork || !g_apis.pTpPostWork || !g_apis.pTpReleaseWork)
         return false;
 
+    g_apis.pRtlAdjustPrivilege = reinterpret_cast<fn_RtlAdjustPrivilege>(
+        resolve_function(HASH_NTDLL, HASH_RtlAdjustPrivilege));
+
     return true;
 }
 

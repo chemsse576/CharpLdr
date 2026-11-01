@@ -85,3 +85,6 @@ constexpr uint32_t HASH_RtlUserThreadStart           = djb2_hash("RtlUserThreadS
 
 // amsi
 constexpr uint32_t HASH_AmsiScanBuffer               = djb2_hash("AmsiScanBuffer");
+
+// privilege
+constexpr uint32_t HASH_RtlAdjustPrivilege           = djb2_hash("RtlAdjustPrivilege");
