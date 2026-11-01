@@ -97,6 +97,29 @@ int main(int argc, char* argv[]) {
     int asm_argc = remaining - 3;
     const char** asm_args = (asm_argc > 0) ? const_cast<const char**>(&argv[arg_offset + 3]) : nullptr;
 
+    static char* split_buf = nullptr;
+    static const char* split_ptrs[64];
+    if (asm_argc == 1 && asm_args && strchr(asm_args[0], ' ')) {
+        size_t len = strlen(asm_args[0]);
+        split_buf = static_cast<char*>(malloc(len + 1));
+        if (split_buf) {
+            memcpy(split_buf, asm_args[0], len + 1);
+            int count = 0;
+            char* p = split_buf;
+            while (*p && count < 64) {
+                while (*p == ' ') p++;
+                if (!*p) break;
+                split_ptrs[count++] = p;
+                while (*p && *p != ' ') p++;
+                if (*p) *p++ = '\0';
+            }
+            if (count > 0) {
+                asm_args = split_ptrs;
+                asm_argc = count;
+            }
+        }
+    }
+
     if (!resolve_phase1_ntdll()) return 1;
     if (!resolve_phase2_kernel32()) return 1;
     if (!resolve_syscalls()) return 1;
